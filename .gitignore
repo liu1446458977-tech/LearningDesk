@@ -16,3 +16,4 @@ hermes_pet_temp/
 *.log
 .DS_Store
 Thumbs.db
+raw_out.txt

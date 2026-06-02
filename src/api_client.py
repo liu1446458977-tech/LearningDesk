@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import subprocess
 import threading
@@ -16,6 +17,10 @@ def _find_hermes():
     return common if os.path.isfile(common) else "hermes"
 
 HERMES_EXE = _find_hermes()
+# Wrapper script that patches prompt_toolkit for session resume in subprocess
+HERMES_WRAPPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hermes_chat.py")
+PYTHON_EXE = sys.executable
+
 HERMES_ENV = {
     **os.environ,
     "HERMES_HOME": os.environ.get("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes")),
@@ -34,7 +39,7 @@ class HermesAPIClient(QObject):
         self._connected = False
         self._session_id = None
         self._ready_event = threading.Event()
-        self._ready_event.set()  # CLI 模式无需预热，立即就绪
+        self._ready_event.set()
 
     def set_message_callback(self, callback):
         self.message_callback = callback
@@ -77,7 +82,7 @@ class HermesAPIClient(QObject):
             self.error_occurred.emit(f"Hermes 错误: {err[:200]}" if err else "Hermes 未返回结果")
             return
 
-        self._extract_session_id(stdout)
+        self._extract_session_id(stderr)
 
         answer = self._parse_output(stdout)
         if answer:
@@ -86,7 +91,8 @@ class HermesAPIClient(QObject):
             self.error_occurred.emit("Hermes 返回为空")
 
     def _build_hermes_cmd(self, text, image_path=None):
-        cmd = [HERMES_EXE, "chat", "-q", text, "-Q"]
+        # Use the wrapper script to avoid prompt_toolkit console errors on session resume
+        cmd = [PYTHON_EXE, HERMES_WRAPPER, "chat", "-q", text, "-Q"]
 
         if self._session_id:
             cmd += ["--resume", self._session_id]
@@ -95,21 +101,30 @@ class HermesAPIClient(QObject):
             cmd += ["--image", image_path]
         return cmd
 
-    def _extract_session_id(self, stdout):
-        for line in stdout.split("\n"):
+    def _extract_session_id(self, stderr):
+        for line in stderr.split("\n"):
             if line.startswith("session_id:"):
                 self._session_id = line.split(":", 1)[1].strip()
                 return
 
     def _parse_output(self, stdout):
-        lines = stdout.strip().split("\n")
+        import re
+        # Strip ANSI/VT escape sequences: ESC[...letter or ESC[?...letter
+        text = re.sub(r'\x1b(?:\[[0-9;]*[A-Za-z]|\[[\?][0-9;]*[A-Za-z])', '', stdout)
+        text = text.replace("\r", "")
+        lines = text.strip().split("\n")
         result_lines = []
         for line in lines:
+            line = line.strip()
+            if not line:
+                continue
             if line.startswith("session_id:"):
                 continue
-            if line.startswith("⚠"):
+            if line.startswith("⚠"):  # ⚠
                 continue
             if line.startswith("warning:"):
+                continue
+            if "Resumed session" in line:
                 continue
             result_lines.append(line)
         return "\n".join(result_lines).strip()

@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat completions."""
+"""Chat completion client — supports both OpenAI and Anthropic API formats."""
 
 from __future__ import annotations
 
@@ -18,15 +18,18 @@ def chat_completion(
     messages: list[dict[str, str]],
     timeout: int = 120,
 ) -> str:
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    headers: dict[str, str] = {"Content-Type": "application/json"}
+    base = base_url.rstrip("/")
+    if "anthropic" in base.lower():
+        return _anthropic_completion(base, api_key, model, messages, timeout)
+    return _openai_completion(base, api_key, model, messages, timeout)
+
+
+def _openai_completion(base, api_key, model, messages, timeout):
+    url = base + "/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.6,
-    }
+    payload = {"model": model, "messages": messages, "temperature": 0.6}
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=timeout)
     except requests.RequestException as e:
@@ -40,6 +43,54 @@ def chat_completion(
     try:
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as e:
+        raise LLMError(f"无法解析模型输出：{data!r}") from e
+
+
+def _anthropic_completion(base, api_key, model, messages, timeout):
+    url = base + "/v1/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    # Extract system message — Anthropic API uses a top-level 'system' field
+    system_text = ""
+    chat_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_text += m["content"] + "\n"
+        else:
+            chat_messages.append({"role": m["role"], "content": m["content"]})
+    if not chat_messages:
+        chat_messages = [{"role": "user", "content": "..."}]
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 4096,
+        "messages": chat_messages,
+    }
+    if system_text.strip():
+        payload["system"] = system_text.strip()
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as e:
+        raise LLMError(f"网络请求失败：{e}") from e
+    # Auto-retry with lowercase model name on 400 (some providers are case-sensitive)
+    if r.status_code == 400 and model != model.lower():
+        payload["model"] = model.lower()
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.RequestException as e:
+            raise LLMError(f"网络请求失败：{e}") from e
+    if r.status_code >= 400:
+        raise LLMError(f"HTTP {r.status_code}: {r.text[:2000]}")
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise LLMError("响应不是合法 JSON") from e
+    try:
+        blocks = data["content"]
+        return "".join(b["text"] for b in blocks if b.get("type") == "text").strip()
+    except (KeyError, TypeError) as e:
         raise LLMError(f"无法解析模型输出：{data!r}") from e
 
 
