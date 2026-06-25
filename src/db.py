@@ -35,6 +35,25 @@ class TaskRow:
     done: bool
 
 
+@dataclass
+class PlanRow:
+    id: int
+    name: str
+    start_date: str
+    end_date: str
+
+
+@dataclass
+class PlanItemRow:
+    id: int
+    plan_id: int
+    plan_date: str
+    subject: str
+    time_slot: str
+    content: str
+    done: bool
+
+
 class Database:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or db_path()
@@ -68,6 +87,27 @@ class Database:
                 generated_at TEXT NOT NULL,
                 PRIMARY KEY (kind, period_key)
             );
+
+            CREATE TABLE IF NOT EXISTS period_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS period_plan_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL REFERENCES period_plans(id) ON DELETE CASCADE,
+                plan_date TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                time_slot TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_plan_items_plan ON period_plan_items(plan_id);
+            CREATE INDEX IF NOT EXISTS idx_plan_items_date ON period_plan_items(plan_date);
             """
         )
         self._conn.commit()
@@ -176,4 +216,55 @@ class Database:
             """,
             (kind, period_key, body, now),
         )
+        self._conn.commit()
+
+    # --- period plans ---
+    def list_plans(self) -> list[PlanRow]:
+        cur = self._conn.execute(
+            "SELECT id, name, start_date, end_date FROM period_plans ORDER BY id DESC"
+        )
+        return [PlanRow(r["id"], r["name"], r["start_date"], r["end_date"]) for r in cur.fetchall()]
+
+    def add_plan(self, name: str, start_date: str, end_date: str) -> int:
+        now = datetime.now().isoformat(timespec="seconds")
+        cur = self._conn.execute(
+            "INSERT INTO period_plans (name, start_date, end_date, created_at) VALUES (?,?,?,?)",
+            (name.strip(), start_date, end_date, now),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    def delete_plan(self, plan_id: int) -> None:
+        self._conn.execute("DELETE FROM period_plan_items WHERE plan_id = ?", (plan_id,))
+        self._conn.execute("DELETE FROM period_plans WHERE id = ?", (plan_id,))
+        self._conn.commit()
+
+    def list_plan_items(self, plan_id: int) -> list[PlanItemRow]:
+        cur = self._conn.execute(
+            "SELECT id, plan_id, plan_date, subject, time_slot, content, done "
+            "FROM period_plan_items WHERE plan_id = ? ORDER BY plan_date, time_slot, id",
+            (plan_id,),
+        )
+        return [PlanItemRow(r["id"], r["plan_id"], r["plan_date"], r["subject"],
+                            r["time_slot"], r["content"], bool(r["done"])) for r in cur.fetchall()]
+
+    def add_plan_item(self, plan_id: int, plan_date: str, subject: str,
+                      time_slot: str, content: str) -> int:
+        now = datetime.now().isoformat(timespec="seconds")
+        cur = self._conn.execute(
+            "INSERT INTO period_plan_items (plan_id, plan_date, subject, time_slot, content, done, created_at) "
+            "VALUES (?,?,?,?,?,0,?)",
+            (plan_id, plan_date, subject.strip(), time_slot.strip(), content.strip(), now),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    def set_plan_item_done(self, item_id: int, done: bool) -> None:
+        self._conn.execute(
+            "UPDATE period_plan_items SET done = ? WHERE id = ?", (1 if done else 0, item_id)
+        )
+        self._conn.commit()
+
+    def delete_plan_item(self, item_id: int) -> None:
+        self._conn.execute("DELETE FROM period_plan_items WHERE id = ?", (item_id,))
         self._conn.commit()

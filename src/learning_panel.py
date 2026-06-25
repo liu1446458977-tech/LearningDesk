@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QScrollArea, QFrame, QCheckBox,
     QTextEdit, QDateEdit, QApplication, QInputDialog, QAbstractScrollArea,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QDate, QThread
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, pyqtSignal, QDate, QThread, QPoint
+from PyQt5.QtGui import QFont, QCursor
 
 import config
 from db import Database, TaskRow
@@ -45,11 +45,31 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none;
 
 TAB_STYLE = """
 QTabWidget::pane { border: 1px solid #2e3340; background: #1a1d24; border-radius: 8px; }
-QTabBar::tab { background: #22262e; color: #8890a0; padding: 8px 16px;
+QTabBar { background: transparent; }
+QTabBar::tab { background: #22262e; color: #8890a0; padding: 10px 8px;
     border: 1px solid #2e3340; border-bottom: none;
-    border-top-left-radius: 6px; border-top-right-radius: 6px; }
+    border-top-left-radius: 6px; border-top-right-radius: 6px;
+    margin-right: 2px; font-size: 13px; }
 QTabBar::tab:selected { background: #1a1d24; color: #648cff; border-bottom: 2px solid #648cff; }
+QTabBar::tab:hover { background: #2a2e38; color: #c0c8e0; }
 """
+
+
+# ── Scrollable tab widget ────────────────────────────────────────────
+
+class _ScrollTabWidget(QTabWidget):
+    """QTabWidget that scrolls tabs with mouse wheel."""
+
+    def wheelEvent(self, event):
+        bar = self.tabBar()
+        if bar.count() == 0:
+            return
+        delta = event.angleDelta().y()
+        if delta > 0:
+            bar.setCurrentIndex(max(0, bar.currentIndex() - 1))
+        elif delta < 0:
+            bar.setCurrentIndex(min(bar.count() - 1, bar.currentIndex() + 1))
+        event.accept()
 
 
 # ── AI Worker Thread ───────────────────────────────────────────────────
@@ -104,6 +124,11 @@ def _text_edit(placeholder=""):
     return te
 
 
+# ── Resize constants ────────────────────────────────────────────────
+_RESIZE_MARGIN = 8
+_MIN_W = 380
+_MIN_H = 320
+
 # ── Learning Panel ─────────────────────────────────────────────────────
 
 class LearningPanel(QWidget):
@@ -116,17 +141,90 @@ class LearningPanel(QWidget):
         self._last_summary_kind = None
         self._last_period_key = None
         self._worker = None
+        self._resize_edge = None
+        self._resize_start_pos = None
+        self._resize_start_geo = None
         self._init_ui()
 
     def set_pet_window(self, pw):
         self.pet_window = pw
+
+    # ── Resize (edge drag) ──────────────────────────────────────────
+
+    def _edge_at(self, pos):
+        """Return set of edges the cursor is near: 'right', 'bottom', 'left', 'top'."""
+        r = self.rect()
+        edges = set()
+        if pos.x() >= r.width() - _RESIZE_MARGIN:
+            edges.add("right")
+        elif pos.x() <= _RESIZE_MARGIN:
+            edges.add("left")
+        if pos.y() >= r.height() - _RESIZE_MARGIN:
+            edges.add("bottom")
+        elif pos.y() <= _RESIZE_MARGIN:
+            edges.add("top")
+        return edges
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            edges = self._edge_at(event.pos())
+            if edges:
+                self._resize_edge = edges
+                self._resize_start_pos = event.globalPos()
+                self._resize_start_geo = self.geometry()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resize_edge and event.buttons() & Qt.LeftButton:
+            delta = event.globalPos() - self._resize_start_pos
+            geo = self._resize_start_geo
+            x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
+            if "right" in self._resize_edge:
+                w = max(_MIN_W, geo.width() + delta.x())
+            if "bottom" in self._resize_edge:
+                h = max(_MIN_H, geo.height() + delta.y())
+            if "left" in self._resize_edge:
+                new_w = max(_MIN_W, geo.width() - delta.x())
+                x = x + (geo.width() - new_w)
+                w = new_w
+            if "top" in self._resize_edge:
+                new_h = max(_MIN_H, geo.height() - delta.y())
+                y = y + (geo.height() - new_h)
+                h = new_h
+            self.setGeometry(x, y, w, h)
+            event.accept()
+            return
+        # Update cursor when hovering near edges
+        edges = self._edge_at(event.pos())
+        if "right" in edges and "bottom" in edges:
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif "left" in edges and "top" in edges:
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif "right" in edges and "top" in edges:
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif "left" in edges and "bottom" in edges:
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif "right" in edges or "left" in edges:
+            self.setCursor(Qt.SizeHorCursor)
+        elif "bottom" in edges or "top" in edges:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._resize_edge = None
+        super().mouseReleaseEvent(event)
 
     # ── UI ─────────────────────────────────────────────────────────────
 
     def _init_ui(self):
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(config.LEARNING_PANEL_WIDTH, config.LEARNING_PANEL_HEIGHT)
+        self.setMinimumSize(_MIN_W, _MIN_H)
+        self.resize(config.LEARNING_PANEL_WIDTH, config.LEARNING_PANEL_HEIGHT)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -159,14 +257,17 @@ class LearningPanel(QWidget):
         cl.addSpacing(8)
 
         # tabs
-        tabs = QTabWidget()
+        tabs = _ScrollTabWidget()
         tabs.setStyleSheet(TAB_STYLE)
+        tabs.tabBar().setExpanding(True)
+        tabs.tabBar().setUsesScrollButtons(False)
         tabs.addTab(self._build_plan_tab(), "今日计划")
+        tabs.addTab(self._build_period_tab(), "周期计划")
         tabs.addTab(self._build_note_tab(), "睡前记录")
         tabs.addTab(self._build_summary_tab(), "周期总结")
         tabs.addTab(self._build_advice_tab(), "学习建议")
         tabs.addTab(self._build_history_tab(), "历史回顾")
-        cl.addWidget(tabs)
+        cl.addWidget(tabs, 1)
 
         outer.addWidget(container)
 
@@ -313,6 +414,291 @@ class LearningPanel(QWidget):
         self.db.delete_task(self._selected_task_id)
         self._selected_task_id = None
         self._refresh_plan()
+
+    # ── Tab: Period Plan (left-right layout) ────────────────────────────
+
+    def _build_period_tab(self):
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        v = QVBoxLayout(page)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(6)
+
+        # top action row
+        top = QHBoxLayout()
+        new_b = _btn("新建计划", True)
+        new_b.clicked.connect(self._new_plan)
+        top.addWidget(new_b)
+        del_plan_b = _btn("删除计划")
+        del_plan_b.setStyleSheet(del_plan_b.styleSheet().replace(ACCENT, RED).replace("#7a9eff", "#ff7777"))
+        del_plan_b.clicked.connect(self._delete_plan)
+        top.addWidget(del_plan_b)
+        top.addStretch()
+        self.plan_info = _label("", TEXT_SECONDARY, 11)
+        top.addWidget(self.plan_info)
+        v.addLayout(top)
+
+        # main split: left plan list, right detail
+        split = QHBoxLayout()
+        split.setSpacing(8)
+
+        # ── left: plan list ──
+        left = QVBoxLayout()
+        left.addWidget(_label("计划列表", ACCENT, 12, True))
+        left_scroll = QScrollArea()
+        left_scroll.setMinimumWidth(120)
+        left_scroll.setMaximumWidth(240)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setStyleSheet("background:transparent; border:none;")
+        left_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
+        self.period_plan_list_widget = QWidget()
+        self.period_plan_list_widget.setStyleSheet("background:transparent;")
+        self.period_plan_list_layout = QVBoxLayout(self.period_plan_list_widget)
+        self.period_plan_list_layout.setAlignment(Qt.AlignTop)
+        self.period_plan_list_layout.setSpacing(3)
+        left_scroll.setWidget(self.period_plan_list_widget)
+        left.addWidget(left_scroll, 1)
+        split.addLayout(left)
+
+        # ── right: detail (add form + items) ──
+        right = QVBoxLayout()
+        right.setSpacing(6)
+
+        # add item row
+        add_row = QHBoxLayout()
+        self.item_date = QDateEdit()
+        self.item_date.setCalendarPopup(True)
+        self.item_date.setDisplayFormat("yyyy-MM-dd")
+        self.item_date.setDate(QDate.currentDate())
+        self.item_date.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:6px; padding:4px 6px; font-size:12px;")
+        add_row.addWidget(self.item_date)
+
+        self.item_subject = QLineEdit()
+        self.item_subject.setPlaceholderText("科目")
+        self.item_subject.setMaximumWidth(90)
+        self.item_subject.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:6px; padding:5px 8px; font-size:12px;")
+        add_row.addWidget(self.item_subject)
+
+        self.item_time = QLineEdit()
+        self.item_time.setPlaceholderText("时段")
+        self.item_time.setMaximumWidth(110)
+        self.item_time.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:6px; padding:5px 8px; font-size:12px;")
+        add_row.addWidget(self.item_time)
+
+        self.item_content = QLineEdit()
+        self.item_content.setPlaceholderText("具体内容...")
+        self.item_content.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:6px; padding:5px 8px; font-size:12px;")
+        self.item_content.returnPressed.connect(self._add_plan_item)
+        add_row.addWidget(self.item_content, 1)
+
+        add_item_b = _btn("添加", True)
+        add_item_b.setFixedWidth(60)
+        add_item_b.clicked.connect(self._add_plan_item)
+        add_row.addWidget(add_item_b)
+        right.addLayout(add_row)
+
+        # scrollable item list
+        self.period_scroll = QScrollArea()
+        self.period_scroll.setWidgetResizable(True)
+        self.period_scroll.setFrameShape(QFrame.NoFrame)
+        self.period_scroll.setStyleSheet("background:transparent; border:none;")
+        self.period_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.period_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
+        self.period_list_widget = QWidget()
+        self.period_list_widget.setStyleSheet("background:transparent;")
+        self.period_list_layout = QVBoxLayout(self.period_list_widget)
+        self.period_list_layout.setAlignment(Qt.AlignTop)
+        self.period_list_layout.setSpacing(2)
+        self.period_scroll.setWidget(self.period_list_widget)
+        right.addWidget(self.period_scroll, 1)
+
+        # delete item button
+        bot = QHBoxLayout()
+        del_item_b = _btn("删除选中条目")
+        del_item_b.setStyleSheet(del_item_b.styleSheet().replace(ACCENT, RED).replace("#7a9eff", "#ff7777"))
+        del_item_b.clicked.connect(self._delete_plan_item)
+        bot.addWidget(del_item_b)
+        bot.addStretch()
+        right.addLayout(bot)
+
+        split.addLayout(right, 1)
+        v.addLayout(split, 1)
+
+        self._active_plan_id = None
+        self._selected_plan_item_id = None
+        self._refresh_plan_list()
+        return page
+
+    # ── Period plan helpers ──────────────────────────────────────────
+
+    def _refresh_plan_list(self):
+        while self.period_plan_list_layout.count():
+            w = self.period_plan_list_layout.takeAt(0)
+            if w.widget():
+                w.widget().deleteLater()
+
+        plans = self.db.list_plans()
+        if not plans:
+            self._active_plan_id = None
+            self.plan_info.setText("暂无计划，点击「新建计划」创建")
+            self._refresh_plan_items()
+            return
+
+        for p in plans:
+            btn = QPushButton(f"{p.name}\n{p.start_date} ~ {p.end_date}")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{DARK_SURFACE}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER};"
+                f"border-radius:6px; padding:8px 10px; font-size:12px; text-align:left; }}"
+                f"QPushButton:hover {{ background:{ACCENT_DIM}; }}"
+                f"QPushButton:checked {{ background:{ACCENT_DIM}; border-color:{ACCENT}; color:white; }}"
+            )
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _, pid=p.id: self._select_plan(pid))
+            self.period_plan_list_layout.addWidget(btn)
+
+        # auto-select first plan
+        if not self._active_plan_id or self._active_plan_id not in [p.id for p in plans]:
+            self._active_plan_id = plans[0].id
+        self._highlight_active_plan()
+        self._refresh_plan_items()
+
+    def _select_plan(self, plan_id):
+        self._active_plan_id = plan_id
+        self._highlight_active_plan()
+        self._refresh_plan_items()
+
+    def _highlight_active_plan(self):
+        for i in range(self.period_plan_list_layout.count()):
+            w = self.period_plan_list_layout.itemAt(i).widget()
+            if isinstance(w, QPushButton):
+                w.setChecked(False)
+        # find and check the active one
+        plans = self.db.list_plans()
+        active_idx = next((i for i, p in enumerate(plans) if p.id == self._active_plan_id), -1)
+        if 0 <= active_idx < self.period_plan_list_layout.count():
+            btn = self.period_plan_list_layout.itemAt(active_idx).widget()
+            if isinstance(btn, QPushButton):
+                btn.setChecked(True)
+
+    def _refresh_plan_items(self):
+        while self.period_list_layout.count():
+            w = self.period_list_layout.takeAt(0)
+            if w.widget():
+                w.widget().deleteLater()
+        self._selected_plan_item_id = None
+
+        if not self._active_plan_id:
+            self.plan_info.setText("")
+            return
+
+        plan = next((p for p in self.db.list_plans() if p.id == self._active_plan_id), None)
+        if plan:
+            self.plan_info.setText(f"{plan.name}  {plan.start_date} ~ {plan.end_date}")
+
+        items = self.db.list_plan_items(self._active_plan_id)
+        from collections import OrderedDict
+        grouped: dict[str, list] = OrderedDict()
+        for it in items:
+            grouped.setdefault(it.plan_date, []).append(it)
+
+        if not grouped:
+            self.period_list_layout.addWidget(_label("暂无条目，在上方添加", TEXT_SECONDARY, 12))
+            return
+
+        for day, day_items in grouped.items():
+            date_lbl = _label(f"  {day}", ACCENT, 12, True)
+            self.period_list_layout.addWidget(date_lbl)
+            for it in day_items:
+                row = QFrame()
+                row.setStyleSheet(f"QFrame {{ background:{DARK_SURFACE}; border:1px solid {DARK_BORDER}; border-radius:6px; }}")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(6, 4, 6, 4)
+                rl.setSpacing(6)
+
+                sel = _btn("选")
+                sel.setFixedSize(36, 26)
+                sel.clicked.connect(lambda _, iid=it.id: self._select_plan_item(iid))
+                rl.addWidget(sel)
+
+                cb = QCheckBox()
+                cb.setChecked(it.done)
+                cb.setStyleSheet("background:transparent;")
+                rl.addWidget(cb)
+
+                parts = []
+                if it.subject:
+                    parts.append(f"[{it.subject}]")
+                if it.time_slot:
+                    parts.append(it.time_slot)
+                if it.content:
+                    parts.append(it.content)
+                info = "  ".join(parts)
+                info_lbl = QLabel(info)
+                info_lbl.setWordWrap(True)
+                info_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                strike = "text-decoration: line-through;" if it.done else ""
+                info_lbl.setStyleSheet(f"color:{TEXT_PRIMARY}; background:transparent; font-size:13px; {strike}")
+                rl.addWidget(info_lbl, 1)
+
+                def _on_toggle(state, iid=it.id, lbl=info_lbl):
+                    self.db.set_plan_item_done(iid, state == Qt.Checked)
+                    s = "text-decoration: line-through;" if state == Qt.Checked else ""
+                    lbl.setStyleSheet(f"color:{TEXT_PRIMARY}; background:transparent; font-size:13px; {s}")
+                cb.stateChanged.connect(_on_toggle)
+
+                self.period_list_layout.addWidget(row)
+
+    def _select_plan_item(self, item_id):
+        self._selected_plan_item_id = item_id
+
+    def _new_plan(self):
+        from PyQt5.QtWidgets import QInputDialog as QI
+        name, ok1 = QI.getText(self, "新建周期计划", "计划名称（如：期末复习）：")
+        if not ok1 or not name.strip():
+            return
+        start, ok2 = QI.getText(self, "新建周期计划", "开始日期（YYYY-MM-DD）：", QLineEdit.Normal, date.today().isoformat())
+        if not ok2:
+            return
+        end, ok3 = QI.getText(self, "新建周期计划", "结束日期（YYYY-MM-DD）：", QLineEdit.Normal,
+                              (date.today() + timedelta(days=14)).isoformat())
+        if not ok3:
+            return
+        pid = self.db.add_plan(name.strip(), start.strip(), end.strip())
+        self._active_plan_id = pid
+        self._refresh_plan_list()
+
+    def _delete_plan(self):
+        if not self._active_plan_id:
+            return
+        self.db.delete_plan(self._active_plan_id)
+        self._active_plan_id = None
+        self._refresh_plan_list()
+
+    def _add_plan_item(self):
+        if not self._active_plan_id:
+            self.plan_info.setText("请先新建一个计划")
+            return
+        plan_date = self.item_date.date().toPyDate().isoformat()
+        subject = self.item_subject.text().strip()
+        time_slot = self.item_time.text().strip()
+        content = self.item_content.text().strip()
+        if not content and not subject:
+            return
+        self.db.add_plan_item(self._active_plan_id, plan_date, subject, time_slot, content)
+        self.item_subject.clear()
+        self.item_time.clear()
+        self.item_content.clear()
+        self._on_plan_changed()
+
+    def _delete_plan_item(self):
+        if not self._selected_plan_item_id:
+            return
+        self.db.delete_plan_item(self._selected_plan_item_id)
+        self._selected_plan_item_id = None
+        self._on_plan_changed()
 
     # ── Tab 2: Notes ──────────────────────────────────────────────────
 
@@ -536,7 +922,8 @@ class LearningPanel(QWidget):
 
         # left: date list
         left_scroll = QScrollArea()
-        left_scroll.setFixedWidth(140)
+        left_scroll.setMinimumWidth(100)
+        left_scroll.setMaximumWidth(220)
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left_scroll.setFrameShape(QFrame.NoFrame)
@@ -583,7 +970,6 @@ class LearningPanel(QWidget):
 
         for d in dates:
             btn = _btn(d)
-            btn.setFixedWidth(130)
             btn.setStyleSheet(
                 f"QPushButton {{ background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER};"
                 f"border-radius:4px; padding:4px 6px; font-size:13px; text-align:left; }}"
@@ -617,8 +1003,8 @@ class LearningPanel(QWidget):
     def show_and_position(self):
         if self.pet_window:
             pet_pos = self.pet_window.pos()
-            x = pet_pos.x() - config.LEARNING_PANEL_WIDTH - 10
-            y = pet_pos.y() - config.LEARNING_PANEL_HEIGHT + config.PET_SIZE
+            x = pet_pos.x() - self.width() - 10
+            y = pet_pos.y() - self.height() + config.PET_SIZE
             self.move(x, y)
         self.show()
         self.raise_()
