@@ -981,7 +981,14 @@ class LearningPanel(QWidget):
     def _on_summary_result(self, text):
         self.summary_status.setText("✓ 生成完成，已保存到历史")
         self.summary_text.setPlainText(text)
+        # Force DB commit visible, then refresh
+        self.db._conn.commit()
         self._refresh_summary_list()
+        # Scroll to top of the list to show the new item
+        if self.summary_list_layout.count():
+            w = self.summary_list_layout.itemAt(0).widget()
+            if w:
+                w.setFocus()
 
     def _on_summary_error(self, err):
         self.summary_status.setText(f"错误: {err[:100]}")
