@@ -756,13 +756,9 @@ class LearningPanel(QWidget):
     def _summary_label(kind: str, period_key: str) -> str:
         kind_cn = LearningPanel.KIND_LABEL.get(kind, kind)
         try:
-            if kind == "month":
-                parts = period_key.split("-")
-                return f"{int(parts[1])}月 {kind_cn}"
-            else:
-                end = period_key.split("_")[1]
-                dt = date.fromisoformat(end)
-                return f"{dt.month}月{dt.day}日 {kind_cn}"
+            end = period_key.split("_")[1]
+            dt = date.fromisoformat(end)
+            return f"{dt.month}月{dt.day}日 {kind_cn}"
         except Exception:
             return f"{period_key} {kind_cn}"
 
@@ -773,13 +769,21 @@ class LearningPanel(QWidget):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
-        # top: generate buttons
-        br = QHBoxLayout()
-        for label, kind in [("生成本周总结", "week"), ("生成半月总结", "half_month"), ("生成本月总结", "month")]:
+        # top: date picker + generate buttons
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        top.addWidget(_label("锚定日期:", TEXT_PRIMARY, 12))
+        self.summary_ref_date = QDateEdit()
+        self.summary_ref_date.setCalendarPopup(True)
+        self.summary_ref_date.setDisplayFormat("yyyy-MM-dd")
+        self.summary_ref_date.setDate(QDate.currentDate())
+        self.summary_ref_date.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:6px; padding:4px 8px;")
+        top.addWidget(self.summary_ref_date)
+        for label, kind in [("周总结(往前7天)", "week"), ("半月总结(往前15天)", "half_month"), ("月总结(往前30天)", "month")]:
             b = _btn(label, True)
             b.clicked.connect(lambda _, k=kind: self._gen_summary(k))
-            br.addWidget(b)
-        v.addLayout(br)
+            top.addWidget(b)
+        v.addLayout(top)
 
         self.summary_status = _label("", TEXT_SECONDARY, 11)
         v.addWidget(self.summary_status)
@@ -790,27 +794,6 @@ class LearningPanel(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(_label("历史总结（勾选后操作）", ACCENT, 12, True))
-
-        # date filter row
-        df = QHBoxLayout()
-        df.setSpacing(4)
-        self.sum_from = QDateEdit()
-        self.sum_from.setCalendarPopup(True)
-        self.sum_from.setDisplayFormat("MM-dd")
-        self.sum_from.setDate(QDate.currentDate().addMonths(-3))
-        self.sum_from.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:4px; padding:3px 6px; font-size:11px;")
-        self.sum_from.dateChanged.connect(self._refresh_summary_list)
-        df.addWidget(_label("从", TEXT_SECONDARY, 11))
-        df.addWidget(self.sum_from)
-        self.sum_to = QDateEdit()
-        self.sum_to.setCalendarPopup(True)
-        self.sum_to.setDisplayFormat("MM-dd")
-        self.sum_to.setDate(QDate.currentDate())
-        self.sum_to.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:4px; padding:3px 6px; font-size:11px;")
-        self.sum_to.dateChanged.connect(self._refresh_summary_list)
-        df.addWidget(_label("至", TEXT_SECONDARY, 11))
-        df.addWidget(self.sum_to)
-        left.addLayout(df)
 
         left_scroll = QScrollArea()
         left_scroll.setMinimumWidth(120)
@@ -860,10 +843,6 @@ class LearningPanel(QWidget):
         self._summary_checks.clear()
 
         items = self.db.list_all_summaries()
-        # date filter
-        d_from = self.sum_from.date().toPyDate() if hasattr(self, 'sum_from') else date.today().replace(day=1)
-        d_to = self.sum_to.date().toPyDate() if hasattr(self, 'sum_to') else date.today()
-        items = [it for it in items if d_from <= date.fromisoformat(it["generated_at"][:10]) <= d_to]
 
         if not items:
             self.summary_list_layout.addWidget(_label("该时段暂无总结", TEXT_SECONDARY, 11))
@@ -977,14 +956,15 @@ class LearningPanel(QWidget):
         if self._worker and self._worker.isRunning():
             return
 
+        ref = self.summary_ref_date.date().toPyDate()
         kind_cn = self.KIND_LABEL.get(kind, kind)
-        self.summary_status.setText(f"正在生成{kind_cn}...")
+        self.summary_status.setText(f"正在生成{kind_cn}（{ref.isoformat()} 往前）...")
         self.summary_text.clear()
 
         fn_map = {
-            "week": lambda: build_ai_week_summary(self.db, base, key, model),
-            "half_month": lambda: build_ai_half_month_summary(self.db, base, key, model),
-            "month": lambda: build_ai_month_summary(self.db, base, key, model),
+            "week": lambda: build_ai_week_summary(self.db, base, key, model, end=ref),
+            "half_month": lambda: build_ai_half_month_summary(self.db, base, key, model, end=ref),
+            "month": lambda: build_ai_month_summary(self.db, base, key, model, ref=ref),
         }
         fn = fn_map[kind]
 

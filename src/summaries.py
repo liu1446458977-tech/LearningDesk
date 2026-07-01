@@ -51,11 +51,10 @@ def build_half_month_summary(db: Database, end: date | None = None) -> tuple[str
 
 
 def build_month_summary(db: Database, ref: date | None = None) -> tuple[str, str]:
-    """Calendar month from 1st to today (backwards-looking)."""
-    ref = ref or date.today()
-    start = date(ref.year, ref.month, 1)
-    end = ref  # stop at today, not end of month
-    period_key = f"{ref.year:04d}-{ref.month:02d}"
+    """Rolling 30 days ending at `ref` (inclusive)."""
+    end = ref or date.today()
+    start = end - timedelta(days=29)
+    period_key = f"{start.isoformat()}_{end.isoformat()}"
     rows = db.iter_days_range(start, end)
     parts = [f"月总结（{start.isoformat()} ～ {end.isoformat()}）", ""]
     for iso, note, tasks in rows:
@@ -131,11 +130,11 @@ def build_ai_month_summary(
     """AI-powered monthly summary."""
     period_key, raw_text = build_month_summary(db, ref)
     system_prompt = (
-        "你是一名专业的学习复盘助手。根据用户提供的「本月每日计划（含完成情况）」与「睡前记录」，生成一份简洁有力的月总结，包含：\n"
-        "① 本月整体完成情况概览\n"
+        "你是一名专业的学习复盘助手。根据用户提供的「近 30 日每日计划（含完成情况）」与「睡前记录」，生成一份简洁有力的月总结，包含：\n"
+        "① 整体完成情况概览\n"
         "② 主要里程碑/成果\n"
         "③ 待改进之处\n"
-        "④ 下月规划建议方向\n\n"
+        "④ 下一阶段建议方向\n\n"
         "控制在 1000 字以内，用中文，分点清晰，语气鼓励但客观。"
     )
     return _build_ai_summary(raw_text, system_prompt, "month", base_url, api_key, model)
