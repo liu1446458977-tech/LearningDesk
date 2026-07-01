@@ -790,6 +790,28 @@ class LearningPanel(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(_label("历史总结（勾选后操作）", ACCENT, 12, True))
+
+        # date filter row
+        df = QHBoxLayout()
+        df.setSpacing(4)
+        self.sum_from = QDateEdit()
+        self.sum_from.setCalendarPopup(True)
+        self.sum_from.setDisplayFormat("MM-dd")
+        self.sum_from.setDate(QDate.currentDate().addMonths(-3))
+        self.sum_from.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:4px; padding:3px 6px; font-size:11px;")
+        self.sum_from.dateChanged.connect(self._refresh_summary_list)
+        df.addWidget(_label("从", TEXT_SECONDARY, 11))
+        df.addWidget(self.sum_from)
+        self.sum_to = QDateEdit()
+        self.sum_to.setCalendarPopup(True)
+        self.sum_to.setDisplayFormat("MM-dd")
+        self.sum_to.setDate(QDate.currentDate())
+        self.sum_to.setStyleSheet(f"background:{INPUT_BG}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER}; border-radius:4px; padding:3px 6px; font-size:11px;")
+        self.sum_to.dateChanged.connect(self._refresh_summary_list)
+        df.addWidget(_label("至", TEXT_SECONDARY, 11))
+        df.addWidget(self.sum_to)
+        left.addLayout(df)
+
         left_scroll = QScrollArea()
         left_scroll.setMinimumWidth(120)
         left_scroll.setMaximumWidth(240)
@@ -838,8 +860,13 @@ class LearningPanel(QWidget):
         self._summary_checks.clear()
 
         items = self.db.list_all_summaries()
+        # date filter
+        d_from = self.sum_from.date().toPyDate() if hasattr(self, 'sum_from') else date.today().replace(day=1)
+        d_to = self.sum_to.date().toPyDate() if hasattr(self, 'sum_to') else date.today()
+        items = [it for it in items if d_from <= date.fromisoformat(it["generated_at"][:10]) <= d_to]
+
         if not items:
-            self.summary_list_layout.addWidget(_label("暂无总结", TEXT_SECONDARY, 11))
+            self.summary_list_layout.addWidget(_label("该时段暂无总结", TEXT_SECONDARY, 11))
             return
 
         for it in items:
