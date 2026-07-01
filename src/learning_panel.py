@@ -748,7 +748,23 @@ class LearningPanel(QWidget):
         self.db.upsert_note(self._note_date_str(), self.note_text.toPlainText())
         self.note_status.setText("✓ 已保存")
 
-    # ── Tab 3: Summary ────────────────────────────────────────────────
+    # ── Tab 3: Summary (left-right layout) ─────────────────────────────
+
+    KIND_LABEL = {"week": "周总结", "half_month": "半月总结", "month": "月总结"}
+
+    @staticmethod
+    def _summary_label(kind: str, period_key: str) -> str:
+        kind_cn = LearningPanel.KIND_LABEL.get(kind, kind)
+        try:
+            if kind == "month":
+                parts = period_key.split("-")
+                return f"{int(parts[1])}月 {kind_cn}"
+            else:
+                end = period_key.split("_")[1]
+                dt = date.fromisoformat(end)
+                return f"{dt.month}月{dt.day}日 {kind_cn}"
+        except Exception:
+            return f"{period_key} {kind_cn}"
 
     def _build_summary_tab(self):
         page = QWidget()
@@ -757,8 +773,9 @@ class LearningPanel(QWidget):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
+        # top: generate buttons
         br = QHBoxLayout()
-        for label, kind in [("本周总结", "week"), ("半月总结", "half_month"), ("本月总结", "month")]:
+        for label, kind in [("生成本周总结", "week"), ("生成半月总结", "half_month"), ("生成本月总结", "month")]:
             b = _btn(label, True)
             b.clicked.connect(lambda _, k=kind: self._gen_summary(k))
             br.addWidget(b)
@@ -767,15 +784,69 @@ class LearningPanel(QWidget):
         self.summary_status = _label("", TEXT_SECONDARY, 11)
         v.addWidget(self.summary_status)
 
+        # split: left history, right content
+        split = QHBoxLayout()
+        split.setSpacing(8)
+
+        left = QVBoxLayout()
+        left.addWidget(_label("历史总结", ACCENT, 12, True))
+        left_scroll = QScrollArea()
+        left_scroll.setMinimumWidth(120)
+        left_scroll.setMaximumWidth(240)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setStyleSheet("background:transparent; border:none;")
+        left_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
+        self.summary_list_widget = QWidget()
+        self.summary_list_widget.setStyleSheet("background:transparent;")
+        self.summary_list_layout = QVBoxLayout(self.summary_list_widget)
+        self.summary_list_layout.setAlignment(Qt.AlignTop)
+        self.summary_list_layout.setSpacing(3)
+        left_scroll.setWidget(self.summary_list_widget)
+        left.addWidget(left_scroll, 1)
+        split.addLayout(left)
+
+        right = QVBoxLayout()
         self.summary_text = _text_edit()
         self.summary_text.setReadOnly(True)
-        v.addWidget(self.summary_text)
+        right.addWidget(self.summary_text, 1)
+        split.addLayout(right, 1)
 
-        cache_b = _btn("读取上次生成的总结")
-        cache_b.clicked.connect(self._load_cached_summary)
-        v.addWidget(cache_b)
+        v.addLayout(split, 1)
 
+        self._refresh_summary_list()
         return page
+
+    def _refresh_summary_list(self):
+        while self.summary_list_layout.count():
+            w = self.summary_list_layout.takeAt(0)
+            if w.widget():
+                w.widget().deleteLater()
+
+        items = self.db.list_all_summaries()
+        if not items:
+            self.summary_list_layout.addWidget(_label("暂无总结", TEXT_SECONDARY, 11))
+            return
+
+        for it in items:
+            label = self._summary_label(it["kind"], it["period_key"])
+            gen_time = it.get("generated_at", "")[:10]
+            btn_text = f"{label}\n{gen_time}" if gen_time else label
+            btn = QPushButton(btn_text)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{DARK_SURFACE}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER};"
+                f"border-radius:6px; padding:6px 8px; font-size:12px; text-align:left; }}"
+                f"QPushButton:hover {{ background:{ACCENT_DIM}; }}"
+            )
+            body = it["body"]
+            btn.clicked.connect(lambda _, b=body, lbl=label: self._show_summary(b, lbl))
+            self.summary_list_layout.addWidget(btn)
+
+    def _show_summary(self, body: str, label: str):
+        self.summary_text.setPlainText(body)
+        self.summary_status.setText(f"查看: {label}")
 
     def _gen_summary(self, kind):
         settings = load_settings()
@@ -788,7 +859,8 @@ class LearningPanel(QWidget):
         if self._worker and self._worker.isRunning():
             return
 
-        self.summary_status.setText("请求中...")
+        kind_cn = self.KIND_LABEL.get(kind, kind)
+        self.summary_status.setText(f"正在生成{kind_cn}...")
         self.summary_text.clear()
 
         fn_map = {
@@ -800,8 +872,6 @@ class LearningPanel(QWidget):
 
         def run():
             pk, text = fn()
-            self._last_summary_kind = kind
-            self._last_period_key = pk
             self.db.save_summary_cache(kind, pk, text)
             return text
 
@@ -811,22 +881,12 @@ class LearningPanel(QWidget):
         self._worker.start()
 
     def _on_summary_result(self, text):
-        self.summary_status.setText("✓ 完成")
+        self.summary_status.setText("✓ 生成完成，已保存到历史")
         self.summary_text.setPlainText(text)
+        self._refresh_summary_list()
 
     def _on_summary_error(self, err):
         self.summary_status.setText(f"错误: {err[:100]}")
-
-    def _load_cached_summary(self):
-        if not self._last_summary_kind or not self._last_period_key:
-            self.summary_status.setText("暂无缓存，请先生成一次")
-            return
-        body = self.db.get_cached_summary(self._last_summary_kind, self._last_period_key)
-        if body:
-            self.summary_text.setPlainText(body)
-            self.summary_status.setText("已加载缓存")
-        else:
-            self.summary_status.setText("未找到缓存")
 
     # ── Tab 4: Advice ─────────────────────────────────────────────────
 

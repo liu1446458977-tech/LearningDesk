@@ -198,6 +198,12 @@ class Database:
         return [str(r["d"]) for r in cur.fetchall()]
 
     # --- summary cache ---
+    def list_all_summaries(self) -> list[dict]:
+        cur = self._conn.execute(
+            "SELECT kind, period_key, body, generated_at FROM summary_cache ORDER BY generated_at DESC"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
     def get_cached_summary(self, kind: str, period_key: str) -> str | None:
         row = self._conn.execute(
             "SELECT body FROM summary_cache WHERE kind = ? AND period_key = ?",
