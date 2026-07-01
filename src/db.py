@@ -198,6 +198,12 @@ class Database:
         return [str(r["d"]) for r in cur.fetchall()]
 
     # --- summary cache ---
+    def delete_summary(self, kind: str, period_key: str) -> None:
+        self._conn.execute(
+            "DELETE FROM summary_cache WHERE kind = ? AND period_key = ?", (kind, period_key)
+        )
+        self._conn.commit()
+
     def list_all_summaries(self) -> list[dict]:
         cur = self._conn.execute(
             "SELECT kind, period_key, body, generated_at FROM summary_cache ORDER BY generated_at DESC"

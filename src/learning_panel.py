@@ -789,7 +789,7 @@ class LearningPanel(QWidget):
         split.setSpacing(8)
 
         left = QVBoxLayout()
-        left.addWidget(_label("历史总结", ACCENT, 12, True))
+        left.addWidget(_label("历史总结（勾选后操作）", ACCENT, 12, True))
         left_scroll = QScrollArea()
         left_scroll.setMinimumWidth(120)
         left_scroll.setMaximumWidth(240)
@@ -805,6 +805,17 @@ class LearningPanel(QWidget):
         self.summary_list_layout.setSpacing(3)
         left_scroll.setWidget(self.summary_list_widget)
         left.addWidget(left_scroll, 1)
+
+        # action buttons under list
+        act = QHBoxLayout()
+        del_b = _btn("删除选中")
+        del_b.setStyleSheet(del_b.styleSheet().replace(ACCENT, RED).replace("#7a9eff", "#ff7777"))
+        del_b.clicked.connect(self._delete_selected_summaries)
+        act.addWidget(del_b)
+        review_b = _btn("总结复盘", True)
+        review_b.clicked.connect(self._review_summaries)
+        act.addWidget(review_b)
+        left.addLayout(act)
         split.addLayout(left)
 
         right = QVBoxLayout()
@@ -815,6 +826,7 @@ class LearningPanel(QWidget):
 
         v.addLayout(split, 1)
 
+        self._summary_checks = []  # list of (QCheckBox, kind, period_key)
         self._refresh_summary_list()
         return page
 
@@ -823,6 +835,7 @@ class LearningPanel(QWidget):
             w = self.summary_list_layout.takeAt(0)
             if w.widget():
                 w.widget().deleteLater()
+        self._summary_checks.clear()
 
         items = self.db.list_all_summaries()
         if not items:
@@ -832,21 +845,99 @@ class LearningPanel(QWidget):
         for it in items:
             label = self._summary_label(it["kind"], it["period_key"])
             gen_time = it.get("generated_at", "")[:10]
-            btn_text = f"{label}\n{gen_time}" if gen_time else label
-            btn = QPushButton(btn_text)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(
-                f"QPushButton {{ background:{DARK_SURFACE}; color:{TEXT_PRIMARY}; border:1px solid {DARK_BORDER};"
-                f"border-radius:6px; padding:6px 8px; font-size:12px; text-align:left; }}"
-                f"QPushButton:hover {{ background:{ACCENT_DIM}; }}"
-            )
+
+            row = QFrame()
+            row.setStyleSheet(f"QFrame {{ background:{DARK_SURFACE}; border:1px solid {DARK_BORDER}; border-radius:6px; }}")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(6, 4, 6, 4)
+            rl.setSpacing(6)
+
+            cb = QCheckBox()
+            cb.setStyleSheet("background:transparent;")
+            rl.addWidget(cb)
+
+            txt = f"{label}\n{gen_time}" if gen_time else label
+            lbl = QLabel(txt)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color:{TEXT_PRIMARY}; background:transparent; font-size:12px;")
+            rl.addWidget(lbl, 1)
+
+            self._summary_checks.append((cb, it["kind"], it["period_key"]))
+
             body = it["body"]
-            btn.clicked.connect(lambda _, b=body, lbl=label: self._show_summary(b, lbl))
-            self.summary_list_layout.addWidget(btn)
+            row.setCursor(Qt.PointingHandCursor)
+            row.mousePressEvent = lambda e, b=body, lb=label: self._show_summary(b, lb)
+            self.summary_list_layout.addWidget(row)
 
     def _show_summary(self, body: str, label: str):
         self.summary_text.setPlainText(body)
         self.summary_status.setText(f"查看: {label}")
+
+    def _delete_selected_summaries(self):
+        deleted = 0
+        for cb, kind, pk in self._summary_checks:
+            if cb.isChecked():
+                self.db.delete_summary(kind, pk)
+                deleted += 1
+        if deleted:
+            self.summary_status.setText(f"已删除 {deleted} 条总结")
+            self._refresh_summary_list()
+        else:
+            self.summary_status.setText("请先勾选要删除的总结")
+
+    def _review_summaries(self):
+        selected = [(cb, kind, pk) for cb, kind, pk in self._summary_checks if cb.isChecked()]
+        if len(selected) < 2:
+            self.summary_status.setText("请勾选至少 2 条总结进行复盘")
+            return
+
+        settings = load_settings()
+        base = settings.get("api_base_url", "")
+        key = settings.get("api_key", "")
+        model = settings.get("model", "")
+        if not base:
+            self.summary_status.setText("请先配置 API（编辑 settings.json）")
+            return
+        if self._worker and self._worker.isRunning():
+            return
+
+        # Collect selected summary bodies with labels
+        parts = []
+        for cb, kind, pk in selected:
+            body = self.db.get_cached_summary(kind, pk)
+            label = self._summary_label(kind, pk)
+            if body:
+                parts.append(f"=== {label} ===\n{body}")
+        raw = "\n\n".join(parts)
+
+        self.summary_status.setText("正在生成总结复盘...")
+        self.summary_text.clear()
+
+        system_prompt = (
+            "你是一名学习复盘分析师。用户提供了多份不同时间段的学习总结。"
+            "请对比分析这些总结，找出学习者的变化与趋势，包含：\n"
+            "① 学习状态的变化趋势（进步/退步/波动）\n"
+            "② 做得好的、持续保持的亮点\n"
+            "③ 反复出现的问题或需要改进的地方\n"
+            "④ 基于趋势的具体建议\n\n"
+            "控制在 800 字以内，用中文，分点清晰，客观但有建设性。"
+        )
+
+        def run():
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": raw},
+            ]
+            return chat_completion(base, key, model, messages)
+
+        self._worker = AIWorkerThread(run, self)
+        self._worker.finished.connect(lambda text: self._on_review_result(text, len(selected)))
+        self._worker.error.connect(self._on_summary_error)
+        self._worker.start()
+
+    def _on_review_result(self, text, count):
+        self.summary_status.setText(f"✓ 复盘完成（基于 {count} 份总结）")
+        self.summary_text.setPlainText(text)
 
     def _gen_summary(self, kind):
         settings = load_settings()

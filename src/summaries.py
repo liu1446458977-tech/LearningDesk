@@ -51,17 +51,13 @@ def build_half_month_summary(db: Database, end: date | None = None) -> tuple[str
 
 
 def build_month_summary(db: Database, ref: date | None = None) -> tuple[str, str]:
-    """Calendar month containing `ref`."""
+    """Calendar month from 1st to today (backwards-looking)."""
     ref = ref or date.today()
     start = date(ref.year, ref.month, 1)
-    if ref.month == 12:
-        next_m = date(ref.year + 1, 1, 1)
-    else:
-        next_m = date(ref.year, ref.month + 1, 1)
-    end = next_m - timedelta(days=1)
+    end = ref  # stop at today, not end of month
     period_key = f"{ref.year:04d}-{ref.month:02d}"
     rows = db.iter_days_range(start, end)
-    parts = [f"月总结（{period_key}）", ""]
+    parts = [f"月总结（{start.isoformat()} ～ {end.isoformat()}）", ""]
     for iso, note, tasks in rows:
         parts.append(_format_day(iso, note, tasks))
         parts.append("")
